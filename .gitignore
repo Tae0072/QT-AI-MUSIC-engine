@@ -160,3 +160,34 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# ──────────────────────────────────────────────────────────────
+# QT-AI-MUSIC-engine project-specific rules
+# ──────────────────────────────────────────────────────────────
+
+# Local Python virtual environment
+venv310/
+
+# Model weights / checkpoints (download separately, too large for git)
+models/
+inference/xcodec_mini_infer/
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Generated audio / inference outputs
+inference/output/
+*.wav
+*.mp3
+*.flac
+
+# Backup files
+*.bak
+*.bak[0-9]*
+*.bak_*
+*~
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

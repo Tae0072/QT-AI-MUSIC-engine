@@ -26,6 +26,55 @@ from vocoder import build_codec_model, process_audio
 from post_process_audio import replace_low_freq_with_energy_matched
 import gradio as gr
 
+# ---- in-app console log capture ----
+import collections as _collections
+LOG_BUFFER = _collections.deque(maxlen=2000)
+class _Tee:
+    def __init__(self, orig):
+        self._orig = orig
+    def write(self, msg):
+        try:
+            if self._orig is not None:
+                self._orig.write(msg)
+        except Exception:
+            pass
+        try:
+            if msg:
+                LOG_BUFFER.append(msg)
+        except Exception:
+            pass
+        return len(msg) if msg else 0
+    def flush(self):
+        try:
+            if self._orig is not None:
+                self._orig.flush()
+        except Exception:
+            pass
+    def isatty(self):
+        return False
+    def fileno(self):
+        if self._orig is not None and hasattr(self._orig, "fileno"):
+            return self._orig.fileno()
+        raise OSError("no fileno")
+try:
+    sys.stdout = _Tee(sys.stdout)
+    sys.stderr = _Tee(sys.stderr)
+except Exception:
+    pass
+def get_console_log():
+    try:
+        text = "".join(LOG_BUFFER)
+    except Exception:
+        text = ""
+    if len(text) > 8000:
+        text = text[-8000:]
+    out_lines = []
+    for ln in text.split("\n"):
+        if "\r" in ln:
+            ln = ln.split("\r")[-1]
+        out_lines.append(ln)
+    return "\n".join(out_lines)
+
 parser = argparse.ArgumentParser()
 # Model Configuration:
 parser.add_argument("--max_new_tokens", type=int, default=3000, help="The maximum number of new tokens to generate in one pass during text generation.")
@@ -70,12 +119,17 @@ compile = args.compile
 sdpa = args.sdpa
 use_icl = args.icl
 
-if use_icl:
-    args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-icl"
-else:
-    args.stage1_model="m-a-p/YuE-s1-7B-anneal-en-cot"
+# 모델 경로: 스크립트 위치(inference/) 기준으로 자동 계산한다.
+# 드라이브 문자(D:/E: 등)나 폴더 위치가 바뀌어도 models 폴더만 함께 있으면 동작한다.
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # YuEGP 폴더
+_MODELS_DIR = os.path.join(_PROJECT_DIR, "models")
 
-args.stage2_model="m-a-p/YuE-s2-1B-general"
+if use_icl:
+    args.stage1_model="m-a-p/YuE-s1-7B-anneal-jp-kr-icl"
+else:
+    args.stage1_model=os.path.join(_MODELS_DIR, "YuE-s1-7B-anneal-jp-kr-cot")
+
+args.stage2_model=os.path.join(_MODELS_DIR, "YuE-s2-1B-general")
 
 args.stage2_batch_size= [20,20,20,4,3,2][profile]   
 
@@ -201,7 +255,10 @@ def stage1_inference(genres, lyrics_input, run_n_segments, max_new_tokens, seed,
     # all kinds of tags are needed
     genres = genres.strip()
 
-    lyrics = split_lyrics(lyrics_input)
+    lyrics = split_lyrics((lyrics_input or "").rstrip("\n") + "\n")
+    if not lyrics:
+        _body = (lyrics_input or "").strip() or "la la la"
+        lyrics = ["[verse]\n" + _body + "\n\n"]
     # instruction
     full_lyrics = "\n".join(lyrics)
     prompt_texts = [f"Generate music from the given lyrics segment by segment.\n[Genre] {genres}\n{full_lyrics}"]
@@ -400,12 +457,10 @@ def stage2_generate(model, prompt, batch_size=16, segment_duration = 6, state = 
 def stage2_inference(model, stage1_output_set, stage2_output_dir, batch_size=4, segment_duration = 6, state = None, callback = None):
     stage2_result = []
     for i in tqdm(range(len(stage1_output_set))):
-        if i==0:
-            # print("---Stage 2.1: Sampling Vocal track")
-            prefix = "Stage 2.1: Sampling Vocal track"
-        else:
-            # print("---Stage 2.2: Sampling Instrumental track")
+        if "_itrack" in stage1_output_set[i]:
             prefix = "Stage 2.2: Sampling Instrumental track"
+        else:
+            prefix = "Stage 2.1: Sampling Vocal track"
 
         output_filename = os.path.join(stage2_output_dir, os.path.basename(stage1_output_set[i]))
         
@@ -519,9 +574,22 @@ def finalize_gallery(state):
     time.sleep(0.2)
     return gr.Button(interactive=  True)
 
-def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, repeat_generation, state, progress=gr.Progress()):
+def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, repeat_generation, instrumental_only, state, progress=gr.Progress()):
     args.use_audio_prompt = False
     args.use_dual_tracks_prompt = False
+    args.instrumental_only = bool(instrumental_only)
+    if args.instrumental_only:
+        import re as _re
+        _g = genres_input or ""
+        for _w in ["female vocal","male vocal","bright vocal","airy vocal","soft vocal","warm vocal","smooth vocal","vocals","vocal","female","male","singer","voice","acappella"]:
+            _g = _re.sub(r"(?i)" + _re.escape(_w), " ", _g)
+        genres_input = "instrumental " + " ".join(_g.split())
+        _labels = ["[verse]","[chorus]","[verse]","[chorus]","[bridge]","[outro]","[verse]","[chorus]","[verse]","[chorus]"]
+        try:
+            _n = max(1, int(run_n_segments))
+        except Exception:
+            _n = 2
+        lyrics_input = "\n\n".join(_labels[_i % len(_labels)] + "\n " for _i in range(_n))
     # Call the function and print the result
     
     if "abort" in state:
@@ -589,6 +657,14 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                 #                       "output/stage1/inspiring-female-uplifting-pop-airy-vocal-electronic-bright-vocal_tp0@93_T1@0_rp1@2_maxtk3000_5b4b4613-1cc2-4d84-af7a-243f853f168b_itrack.npy"]
 
 
+                # 브금만 만들기: 보컬 트랙(vtrack)은 이후 처리(stage2/보코더)에서 제외한다.
+                # -> 보컬 후처리 시간이 빠지고, 최종 결과에도 보컬이 섞이지 않는다.
+                #    (stage1은 구조상 두 트랙을 함께 생성하므로 그 시간은 동일하다)
+                if args.instrumental_only:
+                    _inst_only = [p for p in stage1_output_set if "_itrack" in p]
+                    if _inst_only:
+                        stage1_output_set = _inst_only
+
                 stage2_result = stage2_inference(model_stage2, stage1_output_set, stage2_output_dir, batch_size=args.stage2_batch_size, segment_duration=segment_duration,  state= state, callback= callback)
             except Exception as e:
                 s = str(e)
@@ -647,6 +723,12 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                 except Exception as e:
                     print(e)
 
+            # 브금만 만들기: 보컬과 섞지 않고 악기 트랙(itrack) 자체를 16kHz 합성본으로 사용
+            if args.instrumental_only:
+                _inst_recons = [t for t in tracks if "_itrack" in t]
+                if _inst_recons:
+                    recons_mix = _inst_recons[0]
+
             # vocoder to upsample audios
             vocal_decoder, inst_decoder = build_codec_model(args.config_path, args.vocal_decoder_path, args.inst_decoder_path)
             vocoder_output_dir = os.path.join(args.output_dir, 'vocoder')
@@ -677,13 +759,19 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
                     )
             # mix tracks
             try:
-                mix_output = instrumental_output + vocal_output
+                if args.instrumental_only:
+                    mix_output = instrumental_output          # 보컬 없이 악기만
+                else:
+                    mix_output = instrumental_output + vocal_output
                 vocoder_mix = os.path.join(vocoder_mix_dir, os.path.basename(recons_mix))
                 save_audio(mix_output, vocoder_mix, 44100, args.rescale)
                 print(f"Created mix: {vocoder_mix}")
             except RuntimeError as e:
                 print(e)
-                print(f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
+                try:
+                    print(f"mix {vocoder_mix} failed! inst: {instrumental_output.shape}, vocal: {vocal_output.shape}")
+                except Exception:
+                    print(f"mix {vocoder_mix} failed!")
 
             # Post process
             output_file = os.path.join(args.output_dir, os.path.basename(recons_mix))
@@ -704,84 +792,116 @@ def generate_song(genres_input, lyrics_input, run_n_segments, seed, max_new_toke
 
             # return output_file
 
+MODULE_CSS = """
+.gradio-container {max-width: 1180px !important; margin: auto !important;}
+#hero {text-align:center; padding: 20px 0 2px;}
+#hero-title h1 {font-size: 2.2rem; margin-bottom: 0; background: linear-gradient(90deg,#a855f7,#ec4899); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;}
+#hero-sub p {color:#9aa0b5; margin-top:4px;}
+#gen-btn {background: linear-gradient(135deg,#7c3aed 0%, #db2777 100%) !important; border:none !important; color:#fff !important; font-weight:700 !important; font-size:1.08rem !important; border-radius:12px !important; padding:14px !important;}
+#gen-btn:hover {filter:brightness(1.09);}
+#abort-btn {border-radius:12px !important;}
+.card {border-radius:14px !important;}
+footer {display:none !important;}
+"""
+
+MODULE_DARK_JS = """
+() => {
+  const u = new URL(window.location.href);
+  if (u.searchParams.get('__theme') !== 'dark') {
+    u.searchParams.set('__theme','dark');
+    window.location.replace(u.href);
+  }
+}
+"""
+
 def create_demo():
     
-    with gr.Blocks() as demo:
-        gr.Markdown("<div align=center><H1>YuE<SUP>GP</SUP> v3</div>")
+    CUSTOM_CSS = """
+    .gradio-container {max-width: 1180px !important; margin: auto !important;}
+    #hero {text-align:center; padding: 20px 0 2px;}
+    #hero-title h1 {font-size: 2.2rem; margin-bottom: 0; background: linear-gradient(90deg,#a855f7,#ec4899); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;}
+    #hero-sub p {color:#9aa0b5; margin-top:4px;}
+    #gen-btn {background: linear-gradient(135deg,#7c3aed 0%, #db2777 100%) !important; border:none !important; color:#fff !important; font-weight:700 !important; font-size:1.08rem !important; border-radius:12px !important; padding:14px !important;}
+    #gen-btn:hover {filter:brightness(1.09);}
+    #abort-btn {border-radius:12px !important;}
+    .card {border-radius:14px !important;}
+    footer {display:none !important;}
+    """
 
-        gr.Markdown("<H1><DIV ALIGN=CENTER>YuE is a groundbreaking series of open-source foundation models designed for music generation, specifically for transforming lyrics into full songs (lyrics2song).</DIV></H1>")
-        gr.Markdown("<H2><B>GPU Poor version by DeepBeepMeep</B> (<A HREF='https://github.com/deepbeepmeep/YuEGP'>Updates</A> / <A HREF='https://github.com/multimodal-art-projection/YuE'>Original</A>). Switch to profile 1 for fast generation (requires a 16 GB VRAM GPU), 1 min of song will take only 4 minutes</H2>")
-        if use_icl:
-            gr.Markdown("<H3>With In Context Learning Mode in addition to the lyrics and genres info, you can provide audio prompts to describe your expectations. You can generate a song with either: </H3>")
-            gr.Markdown("<H3>- a single mixed (song/instruments) Audio track prompt</H3>")
-            gr.Markdown("<H3>- a Vocal track and an Instrumental track prompt</H3>")
-            gr.Markdown("Given some Lyrics and sample audio songs, you can try different Genres Prompt by separating each prompt by a carriage return.")
-        else:
-            gr.Markdown("Given some Lyrics, you can try different Genres Prompt by separating each prompt by a carriage return.")
+    FORCE_DARK_JS = """
+    () => {
+      const u = new URL(window.location.href);
+      if (u.searchParams.get('__theme') !== 'dark') {
+        u.searchParams.set('__theme','dark');
+        window.location.replace(u.href);
+      }
+    }
+    """
 
-        with gr.Row():
-            with gr.Column():
+    DEFAULT_LYRICS = "[verse]\n아침 햇살이 창문을 두드리면\n오늘도 새로운 하루가 와\n\n[chorus]\n함께 걸어가요 빛나는 그 길로\n우리의 노래가 울려 퍼지게"
 
-                with open( os.path.join("prompt_examples", "lyrics.txt" ) ) as f:
-                    lyrics_file = f.read()
-                # lyrics_file.replace("\n", "\n\r")
+    with gr.Blocks(title="AI 노래 생성기") as demo:
+        with gr.Column(elem_id="hero"):
+            gr.Markdown("# 🎵 AI 노래 생성기", elem_id="hero-title")
+            gr.Markdown("가사와 스타일을 입력하면 한국어 노래를 만들어 드려요 · YuE", elem_id="hero-sub")
 
-                genres_input = gr.Text(label="Genres Prompt (one Genres Prompt per line for multiple generations)", value="inspiring female uplifting pop airy vocal electronic bright vocal", lines=3) 
-                lyrics_input = gr.Text(label="Lyrics", lines = 20, value=lyrics_file ) 
-                repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="Number of Generated Songs per Genres Prompt") 
-
-            with gr.Column():
+        GENRE_PRESETS = {
+            "🎹 잔잔한 발라드": "korean ballad, emotional female vocal, soft piano, strings, gentle, heartfelt",
+            "✨ 밝은 K-pop": "k-pop, upbeat, bright female vocal, synth, catchy, energetic",
+            "🙏 찬양 (워십)": "korean christian worship, warm female vocal, piano, strings, uplifting",
+            "🎸 어쿠스틱 팝": "acoustic pop, warm male vocal, acoustic guitar, light percussion, cozy",
+            "🎷 감성 R&B": "r&b soul, smooth female vocal, electric piano, groovy bass, mellow",
+        }
+        _gk = list(GENRE_PRESETS.keys())
+        _LEN_MAP = {"짧게 (약 30초)": (1, 3000), "보통 (약 1분)": (2, 3000), "길게 (약 2분)": (4, 3000)}
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=5):
+                gr.Markdown("### 1️⃣ 분위기 고르기")
+                genre_preset = gr.Dropdown(_gk, value=_gk[0], label="🎼 장르 / 분위기")
+                instrumental_only = gr.Checkbox(label="🎹 브금만 만들기 (보컬 없이 연주만 · 가사는 무시됩니다)", value=False)
+                gr.Markdown("### 2️⃣ 가사 쓰기")
+                lyrics_input = gr.Text(label="가사 — 노래로 부를 내용을 줄바꿔서 입력하세요", lines=12, value=DEFAULT_LYRICS, elem_classes="card")
+                gr.Markdown("### 3️⃣ 길이 고르고 만들기")
+                song_length = gr.Slider(30, 240, value=60, step=10, label="🎵 길이 (초) — 길수록 생성이 더 오래 걸려요")
+                generate_btn = gr.Button("🎶 노래 만들기", variant="primary", elem_id="gen-btn", size="lg")
+                abort_btn = gr.Button("⏹ 멈추기", elem_id="abort-btn")
+                with gr.Accordion("✏️ 스타일 직접 수정 / 고급 설정 (안 건드려도 됩니다)", open=False):
+                    genres_input = gr.Text(label="스타일 (영어 키워드 · 위에서 장르를 고르면 자동 입력)", value=GENRE_PRESETS[_gk[0]], lines=2)
+                    number_sequences = gr.Slider(1, 10, value=2, step=1, label="구간 수")
+                    max_new_tokens = gr.Slider(300, 6000, value=3000, step=300, label="구간당 길이(토큰)")
+                    seed = gr.Slider(0, 999999999, value=0, step=1, label="시드 (0이면 매번 랜덤)")
+                    repeat_generation = gr.Slider(1, 25.0, value=1.0, step=1, label="한 번에 만들 곡 수")
+            with gr.Column(scale=4):
+                gr.Markdown("### 🎧 결과")
                 state = gr.State({})
-                number_sequences = gr.Slider(1, 10, value=2, step=1, label="Number of Sequences (paragraphs in Lyrics, the higher this number, the higher the VRAM consumption)")
-                max_new_tokens = gr.Slider(300, 6000, value=3000, step=300, label="Number of tokens per sequence (1000 tokens = 10s, the higher this number, the higher the VRAM consumption) ")
+                gen_status = gr.Text(label="상태", interactive=False, elem_classes="card")
+                output = gr.Audio(label="완성된 노래", elem_classes="card")
+                files_history = gr.Files(label="이전에 만든 노래들", type="filepath", height=160, elem_classes="card")
 
-                seed = gr.Slider(0, 999999999 , value=123, step=1, label="Seed (0 for random)")
-                with gr.Row():
-                    with gr.Column():
-                        gen_status = gr.Text(label="Status", interactive= False) 
-                        generate_btn = gr.Button("Generate")
-                        abort_btn = gr.Button("Abort")
-                        output = gr.Audio( label="Last Generated Song") 
-                        files_history = gr.Files(label="History of Generated Songs (From most Recent to Oldest)", type='filepath', height= 150 )
-                        abort_btn.click(abort_generation,state,abort_btn )
-                        gen_status.change(refresh_gallery, inputs = [state], outputs = [output, files_history] )
+        with gr.Accordion("🎙️ 오디오 프롬프트 (ICL 모드)", open=False, visible=use_icl):
+            with gr.Row():
+                with gr.Column():
+                    vocal_track_prompt = gr.Audio(label="오디오 / 보컬 트랙 프롬프트", type="filepath")
+                with gr.Column():
+                    instrumental_track_prompt = gr.Audio(label="반주 트랙 프롬프트 (보컬 지정 시 선택)", type="filepath")
+            with gr.Row():
+                prompt_start_time = gr.Slider(0.0, 300.0, value=0.0, step=0.5, label="오디오 프롬프트 시작 (초)")
+                prompt_end_time = gr.Slider(0.0, 300.0, value=30.0, step=0.5, label="오디오 프롬프트 끝 (초)")
 
-        with gr.Row(visible=use_icl) : #use_icl
-            with gr.Column():
-                vocal_track_prompt = gr.Audio( label="Audio track prompt / Vocal track prompt", type = 'filepath' )
-            with gr.Column():
-                instrumental_track_prompt = gr.Audio( label="Intrumental track prompt (optional if Vocal track prompt set)", type = 'filepath')
-        with gr.Row(visible=use_icl) : 
-            with gr.Column():
-                prompt_start_time = gr.Slider(0.0, 300.0, value=0.0, step=0.5, label="Audio Prompt Start time")
-                prompt_end_time = gr.Slider(0.0, 300.0, value=30.0, step=0.5, label="Audio Prompt End time") 
+        with gr.Accordion("🖥️ 콘솔 로그 (진행 상황 보기)", open=False):
+            console_box = gr.Textbox(label="", value=get_console_log(), lines=14, max_lines=14, interactive=False, autoscroll=True, elem_classes="card")
+            _log_timer = gr.Timer(1.5)
+            _log_timer.tick(get_console_log, None, console_box)
 
-
-        abort_btn.click(abort_generation,state,abort_btn )
-
-        generate_btn.click( 
+        genre_preset.change(lambda c: GENRE_PRESETS.get(c, ""), genre_preset, genres_input)
+        song_length.change(lambda sec: (max(1, round(sec/30.0)), 3000), song_length, [number_sequences, max_new_tokens])
+        gen_status.change(refresh_gallery, inputs=[state], outputs=[output, files_history])
+        abort_btn.click(abort_generation, state, abort_btn)
+        generate_btn.click(
             fn=generate_song,
-            inputs=[
-                genres_input,
-                lyrics_input,
-                number_sequences,
-                seed,
-                max_new_tokens,
-                vocal_track_prompt,
-                instrumental_track_prompt,
-                prompt_start_time,
-                prompt_end_time,
-                repeat_generation,
-                state
-            ],
-            outputs= [gen_status] #,state 
-
-        ) .then( 
-            finalize_gallery,
-            [state], 
-            [abort_btn]
-        )
-
+            inputs=[genres_input, lyrics_input, number_sequences, seed, max_new_tokens, vocal_track_prompt, instrumental_track_prompt, prompt_start_time, prompt_end_time, repeat_generation, instrumental_only, state],
+            outputs=[gen_status]
+        ).then(finalize_gallery, [state], [abort_btn])
 
     return demo
 
@@ -789,6 +909,9 @@ if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     demo = create_demo()
     demo.launch(
-        server_name=args.server_name, 
-        server_port=args.server_port, 
-        allowed_paths=[args.output_dir])
+        server_name=args.server_name,
+        server_port=args.server_port,
+        allowed_paths=[args.output_dir],
+        theme=gr.themes.Base(primary_hue="purple", secondary_hue="pink", neutral_hue="slate"),
+        css=MODULE_CSS,
+        js=MODULE_DARK_JS)

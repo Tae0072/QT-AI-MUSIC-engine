@@ -1,0 +1,33 @@
+QT-AI-MUSIC-engine
+Copyright 2026 QT-AI-MUSIC-engine contributors
+
+This product is a derivative work and includes / builds upon the following
+open-source projects. All credit for the original work belongs to their
+respective authors.
+
+────────────────────────────────────────────────────────────────────────
+1. YuEGP ("YuE for the GPU Poor")
+   Author:  deepbeepmeep
+   Source:  https://github.com/deepbeepmeep/YuEGP
+   This repository was originally derived from YuEGP. The full upstream
+   commit history is preserved in this repository for attribution.
+
+2. YuE — Open Foundation Models for Music Generation
+   Authors: M-A-P / HKUST and contributors
+   Source:  https://github.com/multimodal-art-projection/YuE
+   Licensed under the Apache License, Version 2.0.
+
+3. xcodec_mini_infer (audio codec used at inference time)
+   Distributed separately as model weights; not included in this repository.
+────────────────────────────────────────────────────────────────────────
+
+Modifications made in this repository (non-exhaustive):
+  - Windows launch tooling (YuE_실행.vbs, YuE_종료.bat, YuE_로딩바.ps1)
+  - Loading-bar / progress UI and execution-error fixes in the Gradio server
+  - Korean-language study notes and workflow documentation
+
+NOTE ON LICENSING:
+This NOTICE asserts attribution in good faith. Before redistributing,
+verify the exact license terms of each upstream project, as model weights
+may carry separate terms (e.g., non-commercial clauses) distinct from the
+source code license.
