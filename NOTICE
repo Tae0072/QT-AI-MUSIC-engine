@@ -1,9 +1,10 @@
 QT-AI-MUSIC-engine
 Copyright 2026 QT-AI-MUSIC-engine contributors
 
-This product is a derivative work and includes / builds upon the following
-open-source projects. All credit for the original work belongs to their
-respective authors.
+This product is a derivative work and builds upon the following open-source
+projects. All credit for the original work belongs to their respective
+authors. This repository is distributed under CC BY-NC 4.0 (non-commercial),
+consistent with the upstream license.
 
 ────────────────────────────────────────────────────────────────────────
 1. YuEGP ("YuE for the GPU Poor")
@@ -15,9 +16,10 @@ respective authors.
 2. YuE — Open Foundation Models for Music Generation
    Authors: M-A-P / HKUST and contributors
    Source:  https://github.com/multimodal-art-projection/YuE
-   Licensed under the Apache License, Version 2.0.
+   Licensed under Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0).
 
 3. xcodec_mini_infer (audio codec used at inference time)
+   Source:  https://huggingface.co/m-a-p/xcodec_mini_infer
    Distributed separately as model weights; not included in this repository.
 ────────────────────────────────────────────────────────────────────────
 
@@ -27,7 +29,6 @@ Modifications made in this repository (non-exhaustive):
   - Korean-language study notes and workflow documentation
 
 NOTE ON LICENSING:
-This NOTICE asserts attribution in good faith. Before redistributing,
-verify the exact license terms of each upstream project, as model weights
-may carry separate terms (e.g., non-commercial clauses) distinct from the
-source code license.
+This work is non-commercial (CC BY-NC 4.0). Before redistributing or using
+commercially, verify the exact terms of each upstream project and any model
+weights, which may carry separate or additional restrictions.
